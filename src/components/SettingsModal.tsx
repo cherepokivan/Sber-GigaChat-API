@@ -16,6 +16,7 @@ import {
   Check,
 } from 'lucide-react';
 import { ApiStatus } from './TopBar';
+import { ConnectionMode } from '../lib/gigachat';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -25,6 +26,8 @@ interface SettingsModalProps {
   onDeleteAccessToken: () => void;
   authKey: string;
   onSaveAuthKey: (key: string) => void;
+  connectionMode: ConnectionMode;
+  onSaveConnectionMode: (mode: ConnectionMode) => void;
   selectedModel: string;
   onSelectModel: (model: string) => void;
   availableModels: string[];
@@ -34,7 +37,7 @@ interface SettingsModalProps {
   onSaveSystemPrompt: (prompt: string) => void;
   apiStatus: ApiStatus;
   statusDetails: string | null;
-  onCheckConnection: (tokenToTest?: string) => Promise<void>;
+  onCheckConnection: (tokenToTest?: string, modeToTest?: ConnectionMode) => Promise<void>;
   isChecking: boolean;
 }
 
@@ -46,6 +49,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onDeleteAccessToken,
   authKey,
   onSaveAuthKey,
+  connectionMode,
+  onSaveConnectionMode,
   selectedModel,
   onSelectModel,
   availableModels,
@@ -93,7 +98,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleTest = async () => {
     handleApplyToken();
-    await onCheckConnection(tokenInput.trim());
+    await onCheckConnection(tokenInput.trim(), connectionMode);
   };
 
   const handleDeleteToken = () => {
@@ -267,6 +272,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </p>
               </div>
             )}
+
+            {/* Connection Mode Selection */}
+            <div className="space-y-1.5 pt-1">
+              <label className="block text-xs font-medium text-[var(--text-primary)]">
+                Режим запросов (CORS & Proxy)
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSaveConnectionMode('proxy')}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    connectionMode === 'proxy'
+                      ? 'bg-[var(--accent-bg)] border-[var(--accent-color)] text-[var(--text-primary)]'
+                      : 'bg-[var(--bg-panel-secondary)] border-[var(--border-color)] text-[var(--text-secondary)] hover:border-[var(--border-color-light)]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-[var(--text-primary)]">
+                      Vercel / Local Proxy
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--success-bg)] text-[var(--success-color)] font-medium">
+                      Рекомендуется
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] leading-tight">
+                    Обходит блокировку CORS в браузере и проблемы с сертификатами Минцифры
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSaveConnectionMode('direct')}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    connectionMode === 'direct'
+                      ? 'bg-[var(--accent-bg)] border-[var(--accent-color)] text-[var(--text-primary)]'
+                      : 'bg-[var(--bg-panel-secondary)] border-[var(--border-color)] text-[var(--text-secondary)] hover:border-[var(--border-color-light)]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-[var(--text-primary)]">
+                      Прямой запрос
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] leading-tight">
+                    Direct https://api.giga.chat (требует установленные сертификаты Минцифры)
+                  </p>
+                </button>
+              </div>
+            </div>
 
             {/* Actions: Test connection & Delete token */}
             <div className="pt-2 flex flex-wrap items-center gap-2.5">

@@ -10,7 +10,13 @@
  * No hardcoded credentials. All tokens provided at runtime.
  */
 
-export const GIGACHAT_BASE_URL = 'https://api.giga.chat';
+export const GIGACHAT_DIRECT_BASE_URL = 'https://api.giga.chat';
+export const GIGACHAT_PROXY_BASE_URL = '/api/gigachat';
+
+// Legacy export for backwards compatibility
+export const GIGACHAT_BASE_URL = GIGACHAT_DIRECT_BASE_URL;
+
+export type ConnectionMode = 'proxy' | 'direct';
 
 export interface ChatMessagePayload {
   role: 'system' | 'user' | 'assistant';
@@ -23,6 +29,7 @@ export interface ChatCompletionParams {
   messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   temperature?: number;
   systemPrompt?: string;
+  mode?: ConnectionMode;
 }
 
 export interface GigaChatModelItem {
@@ -73,7 +80,7 @@ export function formatGigaChatError(error: any): string {
     message.includes('CORS') ||
     error.name === 'TypeError'
   ) {
-    return 'GigaChat API не разрешил прямой запрос из браузера (CORS / сетевая ошибка). Убедитесь в наличии интернет-соединения и отсутствии блокировок.';
+    return 'GigaChat API не разрешил прямой запрос из браузера (CORS / сетевая ошибка). Включен встроенный Vercel-прокси.';
   }
 
   return error.message || 'Ошибка соединения с GigaChat API.';
@@ -81,17 +88,25 @@ export function formatGigaChatError(error: any): string {
 
 /**
  * Fetch available models from GigaChat API
- * GET https://api.giga.chat/v1/models
+ * GET /v1/models (via Vercel proxy or direct)
  */
-export async function getModels(accessToken: string): Promise<string[]> {
+export async function getModels(accessToken: string, mode: ConnectionMode = 'proxy'): Promise<string[]> {
   const cleanToken = accessToken ? accessToken.trim() : '';
   if (!cleanToken) {
     throw new Error('Токен доступа (Access Token) не указан.');
   }
 
+  const primaryUrl = mode === 'direct'
+    ? `${GIGACHAT_DIRECT_BASE_URL}/v1/models`
+    : `${GIGACHAT_PROXY_BASE_URL}/v1/models`;
+
+  const fallbackUrl = mode === 'direct'
+    ? `${GIGACHAT_PROXY_BASE_URL}/v1/models`
+    : `${GIGACHAT_DIRECT_BASE_URL}/v1/models`;
+
   let response: Response;
   try {
-    response = await fetch(`${GIGACHAT_BASE_URL}/v1/models`, {
+    response = await fetch(primaryUrl, {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
@@ -99,8 +114,19 @@ export async function getModels(accessToken: string): Promise<string[]> {
       },
     });
   } catch (err: any) {
-    const errorMsg = formatGigaChatError(err);
-    throw new Error(errorMsg);
+    // If primary failed due to network / CORS, attempt fallback
+    try {
+      response = await fetch(fallbackUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${cleanToken}`,
+        },
+      });
+    } catch {
+      const errorMsg = formatGigaChatError(err);
+      throw new Error(errorMsg);
+    }
   }
 
   if (!response.ok) {
@@ -167,6 +193,7 @@ export async function sendChatCompletion({
   messages,
   temperature = 0.7,
   systemPrompt,
+  mode = 'proxy',
 }: ChatCompletionParams): Promise<{ content: string; model: string }> {
   const cleanToken = accessToken ? accessToken.trim() : '';
   if (!cleanToken) {
@@ -202,9 +229,17 @@ export async function sendChatCompletion({
     temperature: typeof temperature === 'number' ? Math.max(0, Math.min(2, temperature)) : 0.7,
   };
 
+  const primaryUrl = mode === 'direct'
+    ? `${GIGACHAT_DIRECT_BASE_URL}/v1/chat/completions`
+    : `${GIGACHAT_PROXY_BASE_URL}/v1/chat/completions`;
+
+  const fallbackUrl = mode === 'direct'
+    ? `${GIGACHAT_PROXY_BASE_URL}/v1/chat/completions`
+    : `${GIGACHAT_DIRECT_BASE_URL}/v1/chat/completions`;
+
   let response: Response;
   try {
-    response = await fetch(`${GIGACHAT_BASE_URL}/v1/chat/completions`, {
+    response = await fetch(primaryUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -214,7 +249,20 @@ export async function sendChatCompletion({
       body: JSON.stringify(payload),
     });
   } catch (err: any) {
-    throw new Error(formatGigaChatError(err));
+    // If primary failed due to CORS / NetworkError, attempt fallback
+    try {
+      response = await fetch(fallbackUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${cleanToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      throw new Error(formatGigaChatError(err));
+    }
   }
 
   if (!response.ok) {
