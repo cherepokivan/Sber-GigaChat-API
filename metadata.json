@@ -1,0 +1,6 @@
+{
+  "name": "GigaChat Open Client",
+  "description": "Современный веб-клиент для GigaChat API с локальным хранением токенов и истории чатов.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
