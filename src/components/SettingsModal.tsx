@@ -16,7 +16,7 @@ import {
   Check,
 } from 'lucide-react';
 import { ApiStatus } from './TopBar';
-import { ConnectionMode } from '../lib/gigachat';
+import { ConnectionMode, sanitizeToken, isJwtToken, exchangeAuthKeyForToken } from '../lib/gigachat';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -69,12 +69,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [showAuthKey, setShowAuthKey] = useState(false);
   const [showCurlHelper, setShowCurlHelper] = useState(false);
   const [curlCopied, setCurlCopied] = useState(false);
+  const [isExchanging, setIsExchanging] = useState(false);
+  const [exchangeError, setExchangeError] = useState<string | null>(null);
+  const [exchangeSuccess, setExchangeSuccess] = useState<string | null>(null);
+  const [selectedScope, setSelectedScope] = useState<'GIGACHAT_API_PERS' | 'GIGACHAT_API_B2B' | 'GIGACHAT_API_CORP'>('GIGACHAT_API_PERS');
 
   // Sync inputs on open
   useEffect(() => {
     if (isOpen) {
       setTokenInput(accessToken);
       setAuthKeyInput(authKey);
+      setExchangeError(null);
+      setExchangeSuccess(null);
     }
   }, [isOpen, accessToken, authKey]);
 
@@ -92,13 +98,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleApplyToken = () => {
-    onSaveAccessToken(tokenInput.trim());
-    onSaveAuthKey(authKeyInput.trim());
+    const cleanToken = sanitizeToken(tokenInput);
+    const cleanKey = authKeyInput.trim();
+    onSaveAccessToken(cleanToken);
+    onSaveAuthKey(cleanKey);
+    return { cleanToken, cleanKey };
   };
 
   const handleTest = async () => {
-    handleApplyToken();
-    await onCheckConnection(tokenInput.trim(), connectionMode);
+    const { cleanToken } = handleApplyToken();
+    await onCheckConnection(cleanToken, connectionMode);
+  };
+
+  const handleAutoExchange = async () => {
+    const cleanKey = authKeyInput.trim();
+    if (!cleanKey) {
+      setExchangeError('Введите Authorization Key (Client Secret) для автоматического получения токена.');
+      return;
+    }
+    setIsExchanging(true);
+    setExchangeError(null);
+    setExchangeSuccess(null);
+
+    try {
+      const result = await exchangeAuthKeyForToken(cleanKey, selectedScope);
+      const cleanNewToken = sanitizeToken(result.accessToken);
+      setTokenInput(cleanNewToken);
+      onSaveAccessToken(cleanNewToken);
+      onSaveAuthKey(cleanKey);
+      setExchangeSuccess('Access Token успешно получен и сохранён!');
+      // Immediately test connection with the new token
+      await onCheckConnection(cleanNewToken, connectionMode);
+    } catch (err: any) {
+      setExchangeError(err.message || 'Не удалось получить Access Token.');
+    } finally {
+      setIsExchanging(false);
+    }
   };
 
   const handleDeleteToken = () => {
@@ -200,6 +235,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
+              {tokenInput.trim() && (
+                isJwtToken(tokenInput) ? (
+                  <p className="text-[11px] text-[var(--success-color)] flex items-center gap-1 font-medium">
+                    <Check size={12} />
+                    <span>Формат JWT токена корректен (начинается с eyJ...)</span>
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-[var(--warning-color)] flex items-start gap-1 font-medium leading-tight">
+                    <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                    <span>
+                      Внимание: Значение не похоже на JWT токен (начинается с eyJ... и состоит из 3 частей через точку). Если вы скопировали Client Secret или Авторизационные данные, вставьте их в поле ниже и нажмите «Получить токен из ключа».
+                    </span>
+                  </p>
+                )
+              )}
               <p className="text-[11px] text-[var(--warning-color)]">
                 ⚠️ Access Token временный. После истечения срока действия вставьте новый токен.
               </p>
@@ -233,6 +283,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {showAuthKey ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
+
+              {/* Auto Exchange button & Scope selector */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-[11px] text-[var(--text-muted)]">Scope:</span>
+                  <select
+                    value={selectedScope}
+                    onChange={e => setSelectedScope(e.target.value as any)}
+                    className="text-[11px] bg-[var(--bg-panel-secondary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded px-1.5 py-0.5 focus:outline-none"
+                  >
+                    <option value="GIGACHAT_API_PERS">GIGACHAT_API_PERS (Физ. лица)</option>
+                    <option value="GIGACHAT_API_B2B">GIGACHAT_API_B2B (ИП и Юр. лица)</option>
+                    <option value="GIGACHAT_API_CORP">GIGACHAT_API_CORP (Корпорации)</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleAutoExchange}
+                  disabled={isExchanging || !authKeyInput.trim()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--accent-color)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium transition-colors cursor-pointer shadow-sm"
+                >
+                  {isExchanging ? (
+                    <>
+                      <RefreshCw size={12} className="animate-spin" />
+                      <span>Получение токена…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Key size={12} />
+                      <span>Получить токен из ключа</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {exchangeSuccess && (
+                <p className="text-[11px] text-[var(--success-color)] flex items-center gap-1 font-medium mt-1">
+                  <Check size={12} />
+                  <span>{exchangeSuccess}</span>
+                </p>
+              )}
+
+              {exchangeError && (
+                <p className="text-[11px] text-[var(--danger-color)] flex items-start gap-1 font-medium mt-1 leading-tight">
+                  <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                  <span>{exchangeError}</span>
+                </p>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-[11px] text-[var(--text-muted)]">
                   Хранится только локально в браузере.

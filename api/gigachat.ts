@@ -1,14 +1,18 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import https from 'https';
+import crypto from 'crypto';
 
 /**
- * Vercel Serverless Function Proxy for GigaChat API
+ * Vercel Serverless Function Proxy for GigaChat API & OAuth
  * 
- * Proxies requests to https://api.giga.chat transparently:
- * - Solves CORS issues in browsers (adds standard CORS headers)
- * - Uses https.Agent with rejectUnauthorized: false to handle Russian Root CA certificates
- * - Never stores or logs user credentials
- * - Passes request body and authorization headers directly to GigaChat API
+ * Proxies requests to:
+ * - https://api.giga.chat (Chat completions, Models, etc.)
+ * - https://ngw.devices.sberbank.ru:9443/api/v2/oauth (Token exchange from Authorization Key)
+ * 
+ * Solves:
+ * - CORS restrictions in browsers
+ * - Russian National Root CA certificate validation
+ * - Token whitespace/newlines normalization
  */
 export default async function handler(req: any, res: any) {
   // Set CORS headers
@@ -17,7 +21,7 @@ export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization, RqUID'
   );
 
   // Handle preflight OPTIONS
@@ -27,7 +31,7 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    // Determine the target path on https://api.giga.chat
+    // Determine the target path
     let endpoint = '';
 
     if (typeof req.query?.endpoint === 'string') {
@@ -37,7 +41,6 @@ export default async function handler(req: any, res: any) {
     } else if (typeof req.query?.path === 'string') {
       endpoint = req.query.path;
     } else {
-      // Extract from URL if not in query
       const urlPath = req.url?.split('?')[0] || '';
       endpoint = urlPath.replace(/^\/api\/gigachat\/?/, '');
     }
@@ -49,9 +52,16 @@ export default async function handler(req: any, res: any) {
       return;
     }
 
-    // Clean endpoint
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
-    const targetUrl = new URL(`https://api.giga.chat/${cleanEndpoint}`);
+
+    let targetUrl: URL;
+    const isOAuth = cleanEndpoint === 'oauth' || cleanEndpoint === 'v2/oauth';
+
+    if (isOAuth) {
+      targetUrl = new URL('https://ngw.devices.sberbank.ru:9443/api/v2/oauth');
+    } else {
+      targetUrl = new URL(`https://api.giga.chat/${cleanEndpoint}`);
+    }
 
     // Forward any other query params (excluding 'endpoint' and 'path')
     if (req.query && typeof req.query === 'object') {
@@ -62,22 +72,48 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Forward authorization and content headers
+    // Forward headers
     const forwardHeaders: Record<string, string> = {
       'Accept': req.headers['accept'] || 'application/json',
     };
 
-    if (req.headers['authorization']) {
-      forwardHeaders['Authorization'] = req.headers['authorization'];
-    }
-    if (req.headers['content-type']) {
+    if (isOAuth) {
+      forwardHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
+      forwardHeaders['RqUID'] = req.headers['rquid'] || crypto.randomUUID();
+    } else if (req.headers['content-type']) {
       forwardHeaders['Content-Type'] = req.headers['content-type'];
     }
 
-    // Prepare body if POST
+    if (req.headers['authorization']) {
+      let authHeader = String(req.headers['authorization']).trim();
+      // Normalize Bearer token (strip duplicate 'Bearer ', remove quotes and any whitespace/newlines from terminal wrap)
+      if (authHeader.toLowerCase().startsWith('bearer ')) {
+        let rawToken = authHeader.slice(7).trim();
+        while (rawToken.toLowerCase().startsWith('bearer ')) {
+          rawToken = rawToken.slice(7).trim();
+        }
+        rawToken = rawToken.replace(/["']/g, '').replace(/\s+/g, '');
+        authHeader = `Bearer ${rawToken}`;
+      } else if (authHeader.toLowerCase().startsWith('basic ')) {
+        let rawKey = authHeader.slice(6).trim().replace(/["']/g, '').replace(/\s+/g, '');
+        authHeader = `Basic ${rawKey}`;
+      }
+      forwardHeaders['Authorization'] = authHeader;
+    }
+
+    // Prepare body
     let bodyData: Buffer | null = null;
     if (req.method === 'POST') {
-      if (typeof req.body === 'object' && req.body !== null) {
+      if (isOAuth) {
+        let formContent = 'scope=GIGACHAT_API_PERS';
+        if (typeof req.body === 'string' && req.body.includes('scope=')) {
+          formContent = req.body;
+        } else if (typeof req.body === 'object' && req.body?.scope) {
+          formContent = `scope=${encodeURIComponent(req.body.scope)}`;
+        }
+        bodyData = Buffer.from(formContent);
+        forwardHeaders['Content-Length'] = String(bodyData.length);
+      } else if (typeof req.body === 'object' && req.body !== null) {
         bodyData = Buffer.from(JSON.stringify(req.body));
         forwardHeaders['Content-Type'] = 'application/json';
         forwardHeaders['Content-Length'] = String(bodyData.length);
@@ -87,7 +123,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Use https.Agent with rejectUnauthorized: false to accept Russian Root CA certificates
+    // Agent with rejectUnauthorized: false to accept Russian Root CA certificates
     const agent = new https.Agent({
       rejectUnauthorized: false,
     });
@@ -100,7 +136,6 @@ export default async function handler(req: any, res: any) {
         agent,
       },
       proxyRes => {
-        // Forward content-type if present
         if (proxyRes.headers['content-type']) {
           res.setHeader('Content-Type', proxyRes.headers['content-type']);
         }
@@ -123,7 +158,7 @@ export default async function handler(req: any, res: any) {
     );
 
     proxyReq.on('error', err => {
-      console.error('GigaChat proxy error:', err);
+      console.error('GigaChat proxy request error:', err);
       if (!res.headersSent) {
         res.status(502).json({
           error: 'Ошибка соединения с сервером GigaChat (502 Bad Gateway).',

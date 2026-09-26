@@ -45,6 +45,33 @@ export interface ModelsResponse {
 }
 
 /**
+ * Normalizes and cleans the token from common user copy-paste errors:
+ * - Strips redundant 'Bearer '
+ * - Strips quotes (" or ')
+ * - Removes internal whitespace, newlines (\r, \n) caused by terminal line wrapping
+ */
+export function sanitizeToken(token: string): string {
+  if (!token) return '';
+  let clean = token.trim();
+  while (clean.toLowerCase().startsWith('bearer ')) {
+    clean = clean.slice(7).trim();
+  }
+  clean = clean.replace(/["']/g, '');
+  clean = clean.replace(/\s+/g, '');
+  return clean;
+}
+
+/**
+ * Checks if a token matches the standard structure of a JWT Access Token:
+ * Starts with 'eyJ' and has 3 parts separated by dots.
+ */
+export function isJwtToken(token: string): boolean {
+  const clean = sanitizeToken(token);
+  const parts = clean.split('.');
+  return parts.length === 3 && clean.startsWith('eyJ');
+}
+
+/**
  * Normalizes HTTP/Fetch errors into human-friendly Russian messages
  */
 export function formatGigaChatError(error: any): string {
@@ -56,10 +83,10 @@ export function formatGigaChatError(error: any): string {
   const status = error.status || error.statusCode;
 
   if (status === 401) {
-    return 'Access Token недействителен или истёк. Вставьте новый токен в настройках.';
+    return 'GigaChat вернул ошибку авторизации (HTTP 401 Unauthorized). Проверьте корректность Access Token или scope.';
   }
   if (status === 403) {
-    return 'Доступ запрещен (HTTP 403). Проверьте права и тариф вашего аккаунта GigaChat.';
+    return 'Доступ запрещен (HTTP 403). Проверьте права и подключенные пакеты вашего аккаунта GigaChat.';
   }
   if (status === 429) {
     return 'Слишком много запросов (HTTP 429). Превышен лимит токенов/запросов, попробуйте позже.';
@@ -87,11 +114,65 @@ export function formatGigaChatError(error: any): string {
 }
 
 /**
+ * Exchange Authorization Key for Access Token via OAuth proxy
+ */
+export async function exchangeAuthKeyForToken(
+  authKey: string,
+  scope: string = 'GIGACHAT_API_PERS'
+): Promise<{ accessToken: string; expiresAt: number }> {
+  let cleanKey = (authKey || '').trim();
+  while (cleanKey.toLowerCase().startsWith('basic ')) {
+    cleanKey = cleanKey.slice(6).trim();
+  }
+  cleanKey = cleanKey.replace(/["']/g, '').replace(/\s+/g, '');
+
+  if (!cleanKey) {
+    throw new Error('Укажите Authorization Key (Client Secret) для обмена на Access Token.');
+  }
+
+  let response: Response;
+  try {
+    response = await fetch('/api/gigachat?endpoint=oauth', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': `Basic ${cleanKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: `scope=${encodeURIComponent(scope)}`,
+    });
+  } catch (err: any) {
+    throw new Error('Не удалось подключиться к серверу OAuth: ' + (err.message || 'сетевая ошибка'));
+  }
+
+  if (!response.ok) {
+    let errDetail = '';
+    try {
+      const errJson = await response.json();
+      errDetail = errJson.message || errJson.error_description || errJson.error || '';
+    } catch {
+      // ignore
+    }
+    throw new Error(`Ошибка OAuth (HTTP ${response.status}): ${errDetail || 'Проверьте правильность Authorization Key и выбранный scope'}`);
+  }
+
+  const data = await response.json();
+  if (!data?.access_token) {
+    throw new Error('OAuth сервер вернул ответ без access_token.');
+  }
+
+  return {
+    accessToken: data.access_token,
+    expiresAt: data.expires_at || 0,
+  };
+}
+
+/**
  * Fetch available models from GigaChat API
  * GET /v1/models (via Vercel proxy or direct)
  */
 export async function getModels(accessToken: string, mode: ConnectionMode = 'proxy'): Promise<string[]> {
-  const cleanToken = accessToken ? accessToken.trim() : '';
+  const cleanToken = sanitizeToken(accessToken);
   if (!cleanToken) {
     throw new Error('Токен доступа (Access Token) не указан.');
   }
@@ -195,7 +276,7 @@ export async function sendChatCompletion({
   systemPrompt,
   mode = 'proxy',
 }: ChatCompletionParams): Promise<{ content: string; model: string }> {
-  const cleanToken = accessToken ? accessToken.trim() : '';
+  const cleanToken = sanitizeToken(accessToken);
   if (!cleanToken) {
     throw new Error('Для отправки сообщения требуется Access Token. Откройте Настройки и введите токен.');
   }
