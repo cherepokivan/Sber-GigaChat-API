@@ -29,10 +29,12 @@ import {
   getStoredAuthKey,
   saveStoredAuthKey,
   deleteStoredAuthKey,
+  getStoredConnectionMode,
+  saveStoredConnectionMode,
   exportBackup,
   validateAndImportBackup,
 } from './lib/storage';
-import { getModels, sendChatCompletion, formatGigaChatError } from './lib/gigachat';
+import { getModels, sendChatCompletion, formatGigaChatError, ConnectionMode } from './lib/gigachat';
 
 export default function App() {
   // Theme state
@@ -53,6 +55,9 @@ export default function App() {
     getCookie(ACCESS_TOKEN_COOKIE_NAME)
   );
   const [authKey, setAuthKey] = useState<string>(() => getStoredAuthKey());
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>(() =>
+    getStoredConnectionMode()
+  );
 
   // Settings state
   const [selectedModel, setSelectedModel] = useState<string>(() => getStoredModel());
@@ -97,8 +102,9 @@ export default function App() {
 
   // Connection check function
   const checkConnection = useCallback(
-    async (tokenOverride?: string) => {
+    async (tokenOverride?: string, modeOverride?: ConnectionMode) => {
       const token = tokenOverride !== undefined ? tokenOverride : accessToken;
+      const mode = modeOverride !== undefined ? modeOverride : connectionMode;
       if (!token) {
         setApiStatus('idle');
         setStatusDetails('Токен не задан. Вставьте Access Token в настройках.');
@@ -110,7 +116,7 @@ export default function App() {
       setStatusDetails('Проверка подключения к GigaChat API…');
 
       try {
-        const models = await getModels(token);
+        const models = await getModels(token, mode);
         setApiStatus('connected');
         setAvailableModels(models);
         saveStoredModelsList(models);
@@ -129,16 +135,21 @@ export default function App() {
         setIsChecking(false);
       }
     },
-    [accessToken, selectedModel]
+    [accessToken, connectionMode, selectedModel]
   );
 
   // Initial check on mount if token exists in cookie
   useEffect(() => {
     if (accessToken) {
-      checkConnection(accessToken);
+      checkConnection(accessToken, connectionMode);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleSaveConnectionMode = (mode: ConnectionMode) => {
+    setConnectionMode(mode);
+    saveStoredConnectionMode(mode);
+  };
 
   // Save / Delete Access Token
   const handleSaveAccessToken = (newToken: string) => {
@@ -221,6 +232,7 @@ export default function App() {
         messages: historyPayload,
         temperature,
         systemPrompt,
+        mode: connectionMode,
       });
 
       // 3. Add assistant response
@@ -363,6 +375,8 @@ export default function App() {
         onDeleteAccessToken={handleDeleteAccessToken}
         authKey={authKey}
         onSaveAuthKey={handleSaveAuthKey}
+        connectionMode={connectionMode}
+        onSaveConnectionMode={handleSaveConnectionMode}
         selectedModel={selectedModel}
         onSelectModel={handleSaveModel}
         availableModels={availableModels}

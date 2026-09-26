@@ -38,12 +38,35 @@ const STORAGE_KEYS = {
   SYSTEM_PROMPT: 'gc_system_prompt',
   MODELS_LIST: 'gc_models_cache',
   AUTH_KEY: 'gc_auth_key', // Optional authorization key (stored strictly locally if entered)
+  CONNECTION_MODE: 'gc_connection_mode', // 'proxy' (default) or 'direct'
 } as const;
 
 export const DEFAULT_MODEL = 'GigaChat-2';
 export const DEFAULT_TEMPERATURE = 0.7;
 export const DEFAULT_SYSTEM_PROMPT = 'Отвечай на русском языке, понятно и структурированно.';
 export const DEFAULT_THEME = 'dark';
+export const DEFAULT_CONNECTION_MODE: 'proxy' | 'direct' = 'proxy';
+
+/**
+ * Get connection mode (proxy for Vercel/Local or direct https://api.giga.chat)
+ */
+export function getStoredConnectionMode(): 'proxy' | 'direct' {
+  try {
+    const val = localStorage.getItem(STORAGE_KEYS.CONNECTION_MODE);
+    if (val === 'direct' || val === 'proxy') return val;
+  } catch {
+    // ignore
+  }
+  return DEFAULT_CONNECTION_MODE;
+}
+
+export function saveStoredConnectionMode(mode: 'proxy' | 'direct'): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.CONNECTION_MODE, mode);
+  } catch {
+    // ignore
+  }
+}
 
 /**
  * Load chats from localStorage
